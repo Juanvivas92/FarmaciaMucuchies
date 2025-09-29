@@ -1,0 +1,655 @@
+<?php 
+include 'config.php';
+
+// Variable para mensajes
+$mensaje = '';
+$error = '';
+
+// Procesar acciones
+if ($_POST) {
+    if (isset($_POST['accion'])) {
+        $accion = $_POST['accion'];
+        
+        // ELIMINAR CLIENTE
+        if ($accion == 'eliminar') {
+            $id = $_POST['id_cliente'];
+            
+            try {
+                $conn->beginTransaction();
+                
+                // Eliminar productos favoritos del cliente
+                $sql_fav = "DELETE FROM cliente_productos_favoritos WHERE id_cliente = ?";
+                $stmt_fav = $conn->prepare($sql_fav);
+                $stmt_fav->execute([$id]);
+                
+                // Eliminar cliente
+                $sql = "DELETE FROM clientes WHERE id = ?";
+                $stmt = $conn->prepare($sql);
+                $stmt->execute([$id]);
+                
+                $conn->commit();
+                $mensaje = "Cliente eliminado exitosamente";
+            } catch(Exception $e) {
+                $conn->rollback();
+                $error = "Error al eliminar el cliente: " . $e->getMessage();
+            }
+        }
+        
+        // ELIMINAR PRODUCTO FAVORITO DE CLIENTE
+        elseif ($accion == 'eliminar_favorito') {
+            $id_cliente = $_POST['id_cliente'];
+            $id_producto = $_POST['id_producto'];
+            
+            try {
+                $sql = "DELETE FROM cliente_productos_favoritos WHERE id_cliente = ? AND id_producto = ?";
+                $stmt = $conn->prepare($sql);
+                $stmt->execute([$id_cliente, $id_producto]);
+                $mensaje = "Producto favorito eliminado";
+            } catch(Exception $e) {
+                $error = "Error al eliminar el producto favorito: " . $e->getMessage();
+            }
+        }
+        
+        // AGREGAR PRODUCTO FAVORITO A CLIENTE EXISTENTE
+        elseif ($accion == 'agregar_favorito') {
+            $id_cliente = $_POST['id_cliente'];
+            $id_producto = $_POST['id_producto_favorito'];
+            $fecha_compra = $_POST['fecha_compra'] ?? null;
+            $dias_reposicion = $_POST['dias_reposicion'] ?? 30;
+            $descuento = $_POST['descuento'] ?? 0;
+            
+            try {
+                // Calcular fecha próxima reposición
+                $fecha_proxima = null;
+                if ($fecha_compra) {
+                    $fecha_proxima = date('Y-m-d', strtotime($fecha_compra . ' + ' . $dias_reposicion . ' days'));
+                }
+                
+                $sql = "INSERT INTO cliente_productos_favoritos 
+                        (id_cliente, id_producto, fecha_ultima_compra, fecha_proxima_reposicion, descuento_aplicado) 
+                        VALUES (?, ?, ?, ?, ?)";
+                $stmt = $conn->prepare($sql);
+                $stmt->execute([$id_cliente, $id_producto, $fecha_compra, $fecha_proxima, $descuento]);
+                $mensaje = "Producto agregado a favoritos";
+            } catch(Exception $e) {
+                $error = "Error al agregar el producto favorito: " . $e->getMessage();
+            }
+        }
+        
+        // ACTUALIZAR INFORMACIÓN DE PRODUCTO FAVORITO
+        elseif ($accion == 'actualizar_favorito') {
+            $id_cliente = $_POST['id_cliente'];
+            $id_producto = $_POST['id_producto'];
+            $fecha_compra = $_POST['fecha_compra'] ?? null;
+            $dias_reposicion = $_POST['dias_reposicion'] ?? 30;
+            $descuento = $_POST['descuento'] ?? 0;
+            
+            try {
+                // Calcular fecha próxima reposición
+                $fecha_proxima = null;
+                if ($fecha_compra) {
+                    $fecha_proxima = date('Y-m-d', strtotime($fecha_compra . ' + ' . $dias_reposicion . ' days'));
+                }
+                
+                $sql = "UPDATE cliente_productos_favoritos 
+                        SET fecha_ultima_compra = ?, fecha_proxima_reposicion = ?, descuento_aplicado = ?
+                        WHERE id_cliente = ? AND id_producto = ?";
+                $stmt = $conn->prepare($sql);
+                $stmt->execute([$fecha_compra, $fecha_proxima, $descuento, $id_cliente, $id_producto]);
+                $mensaje = "Información actualizada correctamente";
+            } catch(Exception $e) {
+                $error = "Error al actualizar la información: " . $e->getMessage();
+            }
+        }
+    }
+    
+    // CREAR NUEVO CLIENTE
+    else {
+        $nombre = $_POST['nombre_cliente'];
+        $telefono = $_POST['telefono'];
+        $productos_favoritos = $_POST['productos_favoritos'] ?? [];
+        
+        try {
+            $conn->beginTransaction();
+            
+            // Insertar cliente
+            $sql = "INSERT INTO clientes (nombre_cliente, telefono) VALUES (?, ?)";
+            $stmt = $conn->prepare($sql);
+            $stmt->execute([$nombre, $telefono]);
+            $id_cliente = $conn->lastInsertId();
+            
+            // Insertar productos favoritos
+            if (!empty($productos_favoritos)) {
+                $sql_fav = "INSERT IGNORE INTO cliente_productos_favoritos (id_cliente, id_producto) VALUES (?, ?)";
+                $stmt_fav = $conn->prepare($sql_fav);
+                foreach($productos_favoritos as $id_producto) {
+                    if (!empty($id_producto)) {
+                        $stmt_fav->execute([$id_cliente, $id_producto]);
+                    }
+                }
+            }
+            
+            $conn->commit();
+            $mensaje = "Cliente registrado exitosamente";
+        } catch(Exception $e) {
+            $conn->rollback();
+            $error = "Error al registrar el cliente: " . $e->getMessage();
+        }
+    }
+}
+
+// Obtener todos los clientes con sus productos favoritos y fechas
+$sql = "SELECT c.*, 
+               p.nombre_producto,
+               p.marca_producto,
+               cpf.id_producto,
+               cpf.fecha_ultima_compra,
+               cpf.fecha_proxima_reposicion,
+               cpf.descuento_aplicado,
+               COUNT(cpf.id_producto) as total_favoritos
+        FROM clientes c
+        LEFT JOIN cliente_productos_favoritos cpf ON c.id = cpf.id_cliente
+        LEFT JOIN productos p ON cpf.id_producto = p.id
+        GROUP BY c.id, cpf.id_producto
+        ORDER BY c.nombre_cliente";
+$stmt = $conn->prepare($sql);
+$stmt->execute();
+$resultados = $stmt->fetchAll();
+
+// Organizar los datos por cliente
+$clientes = [];
+foreach($resultados as $row) {
+    $id_cliente = $row['id'];
+    if (!isset($clientes[$id_cliente])) {
+        $clientes[$id_cliente] = [
+            'id' => $row['id'],
+            'nombre_cliente' => $row['nombre_cliente'],
+            'telefono' => $row['telefono'],
+            'veces_comprado' => $row['veces_comprado'],
+            'productos_favoritos' => []
+        ];
+    }
+    
+    if ($row['id_producto']) {
+        $clientes[$id_cliente]['productos_favoritos'][] = [
+            'id_producto' => $row['id_producto'],
+            'nombre_producto' => $row['nombre_producto'],
+            'marca_producto' => $row['marca_producto'],
+            'fecha_ultima_compra' => $row['fecha_ultima_compra'],
+            'fecha_proxima_reposicion' => $row['fecha_proxima_reposicion'],
+            'descuento_aplicado' => $row['descuento_aplicado']
+        ];
+    }
+}
+
+// Obtener productos para los selects
+$sql_productos = "SELECT id, nombre_producto, marca_producto FROM productos ORDER BY nombre_producto";
+$stmt_productos = $conn->prepare($sql_productos);
+$stmt_productos->execute();
+$productos = $stmt_productos->fetchAll();
+
+// Obtener un cliente específico para agregar productos favoritos
+$cliente_agregar_favorito = null;
+if (isset($_GET['agregar_favorito'])) {
+    $id_cliente = $_GET['agregar_favorito'];
+    $sql_cliente = "SELECT * FROM clientes WHERE id = ?";
+    $stmt_cliente = $conn->prepare($sql_cliente);
+    $stmt_cliente->execute([$id_cliente]);
+    $cliente_agregar_favorito = $stmt_cliente->fetch();
+}
+
+// Obtener cliente y producto específico para editar
+$editar_favorito = null;
+if (isset($_GET['editar_favorito']) && isset($_GET['id_producto'])) {
+    $id_cliente = $_GET['editar_favorito'];
+    $id_producto = $_GET['id_producto'];
+    
+    $sql_editar = "SELECT cpf.*, c.nombre_cliente, p.nombre_producto, p.marca_producto
+                   FROM cliente_productos_favoritos cpf
+                   JOIN clientes c ON cpf.id_cliente = c.id
+                   JOIN productos p ON cpf.id_producto = p.id
+                   WHERE cpf.id_cliente = ? AND cpf.id_producto = ?";
+    $stmt_editar = $conn->prepare($sql_editar);
+    $stmt_editar->execute([$id_cliente, $id_producto]);
+    $editar_favorito = $stmt_editar->fetch();
+}
+?>
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Clientes - Farmacia Mucuchíes C.A.</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
+</head>
+<body class="bg-light">
+    <?php include 'navbar.php'; ?>
+
+    <div class="container mt-4">
+        <div class="row">
+            <div class="col-12">
+                <h2><i class="bi bi-people"></i> Gestión de Clientes</h2>
+                <hr>
+            </div>
+        </div>
+
+        <?php if($mensaje): ?>
+        <div class="alert alert-success alert-dismissible fade show" role="alert">
+            <i class="bi bi-check-circle"></i> <?php echo $mensaje; ?>
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
+        <?php endif; ?>
+
+        <?php if($error): ?>
+        <div class="alert alert-danger alert-dismissible fade show" role="alert">
+            <i class="bi bi-exclamation-triangle"></i> <?php echo $error; ?>
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
+        <?php endif; ?>
+
+        <div class="row">
+            <div class="col-md-12">
+                <div class="accordion" id="clientesAccordion">
+                    <!-- Formulario de nuevo cliente -->
+                    <div class="accordion-item">
+                        <h2 class="accordion-header" id="headingNuevoCliente">
+                            <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#collapseNuevoCliente" aria-expanded="true" aria-controls="collapseNuevoCliente">
+                                <i class="bi bi-person-plus"></i>
+                                <span class="ms-2">Nuevo Cliente</span>
+                            </button>
+                        </h2>
+                        <div id="collapseNuevoCliente" class="accordion-collapse collapse show" aria-labelledby="headingNuevoCliente" data-bs-parent="#clientesAccordion">
+                            <div class="accordion-body">
+                                <div class="card">
+                                    <div class="card-body">
+                                        <form method="POST">
+                                            <div class="row">
+                                                <div class="col-md-6">
+                                                    <div class="mb-3">
+                                                        <label class="form-label">Nombre del Cliente *</label>
+                                                        <input type="text" class="form-control" name="nombre_cliente" required>
+                                                    </div>
+                                                </div>
+                                                <div class="col-md-6">
+                                                    <div class="mb-3">
+                                                        <label class="form-label">Teléfono *</label>
+                                                        <input type="text" class="form-control" name="telefono" placeholder="Ej: 0412-1234567" required>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            
+                                            <div class="mb-3">
+                                                <label class="form-label">Productos Favoritos (múltiples)</label>
+                                                <select class="form-select" name="productos_favoritos[]" multiple size="5">
+                                                    <?php foreach($productos as $producto): ?>
+                                                    <option value="<?php echo $producto['id']; ?>">
+                                                        <?php echo htmlspecialchars($producto['nombre_producto'] . ' (' . $producto['marca_producto'] . ')'); ?>
+                                                    </option>
+                                                    <?php endforeach; ?>
+                                                </select>
+                                                <small>Mantén presionada la tecla Ctrl (o Cmd en Mac) para seleccionar múltiples productos</small>
+                                            </div>
+                                            
+                                            <button type="submit" class="btn btn-success">
+                                                <i class="bi bi-save"></i> Registrar Cliente
+                                            </button>
+                                        </form>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Formulario para agregar productos favoritos a cliente existente -->
+                    <?php if($cliente_agregar_favorito): ?>
+                    <div class="accordion-item">
+                        <h2 class="accordion-header" id="headingAgregarFavorito">
+                            <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#collapseAgregarFavorito" aria-expanded="true" aria-controls="collapseAgregarFavorito">
+                                <i class="bi bi-plus-circle"></i>
+                                <span class="ms-2">Agregar Producto Favorito</span>
+                            </button>
+                        </h2>
+                        <div id="collapseAgregarFavorito" class="accordion-collapse collapse show" aria-labelledby="headingAgregarFavorito" data-bs-parent="#clientesAccordion">
+                            <div class="accordion-body">
+                                <div class="card">
+                                    <div class="card-body">
+                                        <h6>Agregar a: <?php echo htmlspecialchars($cliente_agregar_favorito['nombre_cliente']); ?></h6>
+                                        <form method="POST">
+                                            <input type="hidden" name="accion" value="agregar_favorito">
+                                            <input type="hidden" name="id_cliente" value="<?php echo $cliente_agregar_favorito['id']; ?>">
+                                            
+                                            <div class="row">
+                                                <div class="col-md-6">
+                                                    <div class="mb-3">
+                                                        <label class="form-label">Producto Favorito *</label>
+                                                        <select class="form-select" name="id_producto_favorito" required>
+                                                            <option value="">Seleccionar producto...</option>
+                                                            <?php foreach($productos as $producto): ?>
+                                                            <option value="<?php echo $producto['id']; ?>">
+                                                                <?php echo htmlspecialchars($producto['nombre_producto'] . ' (' . $producto['marca_producto'] . ')'); ?>
+                                                            </option>
+                                                            <?php endforeach; ?>
+                                                        </select>
+                                                    </div>
+                                                    
+                                                    <div class="mb-3">
+                                                        <label class="form-label">Fecha de Compra</label>
+                                                        <input type="date" class="form-control" name="fecha_compra" value="<?php echo date('Y-m-d'); ?>">
+                                                    </div>
+                                                </div>
+                                                <div class="col-md-6">
+                                                    <div class="mb-3">
+                                                        <label class="form-label">Días para Reposición</label>
+                                                        <input type="number" class="form-control" name="dias_reposicion" value="30" min="1" max="365">
+                                                        <small>Estimación de días para que el cliente repita la compra</small>
+                                                    </div>
+                                                    
+                                                    <div class="mb-3">
+                                                        <label class="form-label">Descuento</label>
+                                                        <select class="form-select" name="descuento">
+                                                            <option value="0">Sin descuento</option>
+                                                            <option value="5">5% de descuento</option>
+                                                            <option value="10">10% de descuento</option>
+                                                        </select>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            
+                                            <button type="submit" class="btn btn-warning">
+                                                <i class="bi bi-plus"></i> Agregar a Favoritos
+                                            </button>
+                                            <a href="clientes.php" class="btn btn-secondary">Cancelar</a>
+                                        </form>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <?php endif; ?>
+                    
+                    <!-- Formulario para editar producto favorito -->
+                    <?php if($editar_favorito): ?>
+                    <div class="accordion-item">
+                        <h2 class="accordion-header" id="headingEditarFavorito">
+                            <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#collapseEditarFavorito" aria-expanded="true" aria-controls="collapseEditarFavorito">
+                                <i class="bi bi-pencil"></i>
+                                <span class="ms-2">Editar Producto Favorito</span>
+                            </button>
+                        </h2>
+                        <div id="collapseEditarFavorito" class="accordion-collapse collapse show" aria-labelledby="headingEditarFavorito" data-bs-parent="#clientesAccordion">
+                            <div class="accordion-body">
+                                <div class="card">
+                                    <div class="card-body">
+                                        <h6>Cliente: <?php echo htmlspecialchars($editar_favorito['nombre_cliente']); ?></h6>
+                                        <h6>Producto: <?php echo htmlspecialchars($editar_favorito['nombre_producto'] . ' (' . $editar_favorito['marca_producto'] . ')'); ?></h6>
+                                        
+                                        <form method="POST">
+                                            <input type="hidden" name="accion" value="actualizar_favorito">
+                                            <input type="hidden" name="id_cliente" value="<?php echo $editar_favorito['id_cliente']; ?>">
+                                            <input type="hidden" name="id_producto" value="<?php echo $editar_favorito['id_producto']; ?>">
+                                            
+                                            <div class="row">
+                                                <div class="col-md-6">
+                                                    <div class="mb-3">
+                                                        <label class="form-label">Fecha de Compra</label>
+                                                        <input type="date" class="form-control" name="fecha_compra" 
+                                                               value="<?php echo $editar_favorito['fecha_ultima_compra']; ?>">
+                                                    </div>
+                                                </div>
+                                                <div class="col-md-6">
+                                                    <div class="mb-3">
+                                                        <label class="form-label">Días para Reposición</label>
+                                                        <input type="number" class="form-control" name="dias_reposicion" 
+                                                               value="<?php 
+                                                               if ($editar_favorito['fecha_ultima_compra'] && $editar_favorito['fecha_proxima_reposicion']) {
+                                                                   $diff = strtotime($editar_favorito['fecha_proxima_reposicion']) - strtotime($editar_favorito['fecha_ultima_compra']);
+                                                                   echo round($diff / (60 * 60 * 24));
+                                                               } else {
+                                                                   echo '30';
+                                                               }
+                                                               ?>" min="1" max="365">
+                                                        <small>Estimación de días para que el cliente repita la compra</small>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            
+                                            <div class="row">
+                                                <div class="col-md-6">
+                                                    <div class="mb-3">
+                                                        <label class="form-label">Descuento</label>
+                                                        <select class="form-select" name="descuento">
+                                                            <option value="0" <?php echo $editar_favorito['descuento_aplicado'] == 0 ? 'selected' : ''; ?>>Sin descuento</option>
+                                                            <option value="5" <?php echo $editar_favorito['descuento_aplicado'] == 5 ? 'selected' : ''; ?>>5% de descuento</option>
+                                                            <option value="10" <?php echo $editar_favorito['descuento_aplicado'] == 10 ? 'selected' : ''; ?>>10% de descuento</option>
+                                                        </select>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            
+                                            <button type="submit" class="btn btn-info text-white">
+                                                <i class="bi bi-save"></i> Actualizar Información
+                                            </button>
+                                            <a href="clientes.php" class="btn btn-secondary">Cancelar</a>
+                                        </form>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <?php endif; ?>
+
+                    <!-- Lista de clientes registrados -->
+                    <div class="accordion-item">
+                        <h2 class="accordion-header" id="headingListaClientes">
+                            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseListaClientes" aria-expanded="false" aria-controls="collapseListaClientes">
+                                <i class="bi bi-list"></i>
+                                <span class="ms-2">Clientes Registrados (<?php echo count($clientes); ?>)</span>
+                            </button>
+                        </h2>
+                        <div id="collapseListaClientes" class="accordion-collapse collapse" aria-labelledby="headingListaClientes" data-bs-parent="#clientesAccordion">
+                            <div class="accordion-body">
+                                <div class="card">
+                                    <div class="card-body">
+                                        <div class="accordion" id="clientesListAccordion">
+                                            <?php foreach($clientes as $cliente): ?>
+                                            <div class="accordion-item">
+                                                <h2 class="accordion-header" id="headingCliente<?php echo $cliente['id']; ?>">
+                                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseCliente<?php echo $cliente['id']; ?>" aria-expanded="false" aria-controls="collapseCliente<?php echo $cliente['id']; ?>">
+                                                        <div class="d-flex justify-content-between align-items-center w-100">
+                                                            <span>
+                                                                <i class="bi bi-person"></i>
+                                                                <?php echo htmlspecialchars($cliente['nombre_cliente']); ?>
+                                                            </span>
+                                                            <div>
+                                                                <span class="badge bg-primary me-2">
+                                                                    <?php echo count($cliente['productos_favoritos']); ?> productos
+                                                                </span>
+                                                            </div>
+                                                        </div>
+                                                    </button>
+                                                </h2>
+                                                <div id="collapseCliente<?php echo $cliente['id']; ?>" class="accordion-collapse collapse" aria-labelledby="headingCliente<?php echo $cliente['id']; ?>" data-bs-parent="#clientesListAccordion">
+                                                    <div class="accordion-body">
+                                                        <div class="row mb-3">
+                                                            <div class="col-md-6">
+                                                                <strong>Teléfono:</strong> <?php echo htmlspecialchars($cliente['telefono']); ?><br>
+                                                            </div>
+                                                            <div class="col-md-6 text-end">
+                                                                <a href="clientes.php?agregar_favorito=<?php echo $cliente['id']; ?>" 
+                                                                   class="btn btn-warning btn-sm">
+                                                                    <i class="bi bi-plus"></i> Agregar Producto
+                                                                </a>
+                                                                <button type="button" class="btn btn-danger btn-sm" 
+                                                                        onclick="confirmarEliminacion(<?php echo $cliente['id']; ?>, '<?php echo addslashes(htmlspecialchars($cliente['nombre_cliente'])); ?>')">
+                                                                    <i class="bi bi-trash"></i> Eliminar Cliente
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                        
+                                                        <?php if (!empty($cliente['productos_favoritos'])): ?>
+                                                        <div class="table-responsive">
+                                                            <table class="table table-sm">
+                                                                <thead>
+                                                                    <tr>
+                                                                        <th>Producto</th>
+                                                                        <th>Última Compra</th>
+                                                                        <th>Próxima Reposición</th>
+                                                                        <th>Descuento</th>
+                                                                        <th>Acciones</th>
+                                                                    </tr>
+                                                                </thead>
+                                                                <tbody>
+                                                                    <?php foreach($cliente['productos_favoritos'] as $producto): ?>
+                                                                    <tr>
+                                                                        <td>
+                                                                            <small><?php echo htmlspecialchars($producto['nombre_producto']); ?></small><br>
+                                                                            <span class="badge bg-secondary"><?php echo htmlspecialchars($producto['marca_producto']); ?></span>
+                                                                        </td>
+                                                                        <td>
+                                                                            <?php if($producto['fecha_ultima_compra']): ?>
+                                                                                <?php echo date('d/m/Y', strtotime($producto['fecha_ultima_compra'])); ?>
+                                                                            <?php else: ?>
+                                                                                <span class="badge bg-secondary">No registrada</span>
+                                                                            <?php endif; ?>
+                                                                        </td>
+                                                                        <td>
+                                                                            <?php if($producto['fecha_proxima_reposicion']): ?>
+                                                                                <?php 
+                                                                                $fecha_reposicion = strtotime($producto['fecha_proxima_reposicion']);
+                                                                                $hoy = strtotime(date('Y-m-d'));
+                                                                                $diferencia = ($fecha_reposicion - $hoy) / (60 * 60 * 24);
+                                                                                
+                                                                                if ($diferencia < 0): ?>
+                                                                                    <span class="badge bg-danger">
+                                                                                        HOY (<?php echo date('d/m/Y', $fecha_reposicion); ?>)
+                                                                                    </span>
+                                                                                <?php elseif ($diferencia <= 7): ?>
+                                                                                    <span class="badge bg-warning text-dark">
+                                                                                        <?php echo round($diferencia); ?> días (<?php echo date('d/m/Y', $fecha_reposicion); ?>)
+                                                                                    </span>
+                                                                                <?php else: ?>
+                                                                                    <span class="badge bg-success">
+                                                                                        <?php echo date('d/m/Y', $fecha_reposicion); ?>
+                                                                                    </span>
+                                                                                <?php endif; ?>
+                                                                            <?php else: ?>
+                                                                                <span class="badge bg-secondary">No programada</span>
+                                                                            <?php endif; ?>
+                                                                        </td>
+                                                                        <td>
+                                                                            <?php if($producto['descuento_aplicado'] > 0): ?>
+                                                                                <span class="badge bg-success"><?php echo $producto['descuento_aplicado']; ?>%</span>
+                                                                            <?php else: ?>
+                                                                                <span class="badge bg-secondary">0%</span>
+                                                                            <?php endif; ?>
+                                                                        </td>
+                                                                        <td>
+                                                                            <div class="btn-group btn-group-sm">
+                                                                                <a href="clientes.php?editar_favorito=<?php echo $cliente['id']; ?>&id_producto=<?php echo $producto['id_producto']; ?>" 
+                                                                                   class="btn btn-info btn-sm" title="Editar">
+                                                                                    <i class="bi bi-pencil"></i>
+                                                                                </a>
+                                                                                <button type="button" class="btn btn-danger btn-sm" 
+                                                                                        onclick="confirmarEliminarFavorito(<?php echo $cliente['id']; ?>, <?php echo $producto['id_producto']; ?>, '<?php echo addslashes(htmlspecialchars($producto['nombre_producto'])); ?>')"
+                                                                                        title="Eliminar producto">
+                                                                                    <i class="bi bi-trash"></i>
+                                                                                </button>
+                                                                            </div>
+                                                                        </td>
+                                                                    </tr>
+                                                                    <?php endforeach; ?>
+                                                                </tbody>
+                                                            </table>
+                                                        </div>
+                                                        <?php else: ?>
+                                                        <div class="alert alert-secondary">
+                                                            <i class="bi bi-info-circle"></i> No hay productos favoritos registrados
+                                                        </div>
+                                                        <?php endif; ?>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <?php endforeach; ?>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal de confirmación de eliminación de cliente -->
+    <div class="modal fade" id="confirmarEliminarModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header bg-danger text-white">
+                    <h5 class="modal-title">Confirmar Eliminación</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <p>¿Está seguro que desea eliminar el cliente <strong id="nombreClienteEliminar"></strong>?</p>
+                    <p class="text-danger">Esta acción eliminará también todos sus productos favoritos.</p>
+                    <p class="text-danger">Esta acción no se puede deshacer.</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <form method="POST" id="formEliminar" style="display: inline;">
+                        <input type="hidden" name="accion" value="eliminar">
+                        <input type="hidden" name="id_cliente" id="idClienteEliminar">
+                        <button type="submit" class="btn btn-danger">Eliminar</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal de confirmación de eliminación de producto favorito -->
+    <div class="modal fade" id="confirmarEliminarFavoritoModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header bg-danger text-white">
+                    <h5 class="modal-title">Confirmar Eliminación</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <p>¿Está seguro que desea eliminar el producto <strong id="nombreProductoEliminar"></strong> de los favoritos de este cliente?</p>
+                    <p class="text-danger">Esta acción no se puede deshacer.</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <form method="POST" id="formEliminarFavorito" style="display: inline;">
+                        <input type="hidden" name="accion" value="eliminar_favorito">
+                        <input type="hidden" name="id_cliente" id="idClienteFavoritoEliminar">
+                        <input type="hidden" name="id_producto" id="idProductoFavoritoEliminar">
+                        <button type="submit" class="btn btn-danger">Eliminar</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <script>
+        function confirmarEliminacion(id, nombre) {
+            document.getElementById('nombreClienteEliminar').textContent = nombre;
+            document.getElementById('idClienteEliminar').value = id;
+            var modal = new bootstrap.Modal(document.getElementById('confirmarEliminarModal'));
+            modal.show();
+        }
+        
+        function confirmarEliminarFavorito(id_cliente, id_producto, nombre_producto) {
+            document.getElementById('nombreProductoEliminar').textContent = nombre_producto;
+            document.getElementById('idClienteFavoritoEliminar').value = id_cliente;
+            document.getElementById('idProductoFavoritoEliminar').value = id_producto;
+            var modal = new bootstrap.Modal(document.getElementById('confirmarEliminarFavoritoModal'));
+            modal.show();
+        }
+    </script>
+</body>
+</html>
